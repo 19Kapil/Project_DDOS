@@ -1,0 +1,7 @@
+sudo ovs-vsctl -- --id=@sflow create sflow agent=lo target=127.0.0.1 sampling=10 polling=10 -- -- set bridge s1 sflow=@sflow
+
+ryu-manager ryu/app/simple_switch_13.py,ryu/app/ofctl_rest.py --observe-links --ofp-tcp-listen-port 6653 --wsapi-port 8080
+
+sudo sflow-rt/start.sh
+
+sudo mn --custom sflow/sflow-rt/extras/sflow.py --link tc,bw=10 --controller=remote,ip=127.0.0.1:6653 --topo tree,depth=2,fanout=2
