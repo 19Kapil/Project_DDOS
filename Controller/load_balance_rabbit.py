@@ -2,36 +2,41 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, DEAD_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.lib import hub
-import pika  # RabbitMQ or other broker
-
-import switch
+import pika  # RabbitMQ library
+import json
 from datetime import datetime
-import joblib
-import pandas as pd
-from sklearn import svm
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import confusion_matrix
-from sklearn.metrics import accuracy_score
+import switch
 
-class SimpleMonitor13(switch.SimpleSwitch13):
 
+class LoadBalancedController(switch.SimpleSwitch13):
     def __init__(self, *args, **kwargs):
-        super(SimpleMonitor13, self).__init__(*args, **kwargs)
+        super(LoadBalancedController, self).__init__(*args, **kwargs)
         self.datapaths = {}
         self.monitor_thread = hub.spawn(self._monitor)
-        self.flow_threshold = 100  # Example flow count threshold for load balancing
-        self.load_model()
+        self.migration_thread = hub.spawn(self._consume_migration_commands)
+        self.flow_threshold = 30  # Example flow count threshold
         self.setup_messaging()
 
     def setup_messaging(self):
-        # Set up the message broker (RabbitMQ in this case)
-        self.connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
-        self.channel = self.connection.channel()
-        self.channel.queue_declare(queue='controller_states')
+        """Set up RabbitMQ connections for communication."""
+        try:
+            # Producer connection to send stats
+            self.producer_connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
+            self.producer_channel = self.producer_connection.channel()
+            self.producer_channel.queue_declare(queue='controller_states')
+
+            # Consumer connection to receive migration commands
+            self.consumer_connection = pika.BlockingConnection(pika.ConnectionParameters('localhost'))
+            self.consumer_channel = self.consumer_connection.channel()
+            self.consumer_channel.queue_declare(queue='migration_commands')
+        except pika.exceptions.AMQPConnectionError as e:
+            self.logger.error(f"Failed to connect to RabbitMQ: {e}")
+            self.producer_connection = None
+            self.consumer_connection = None
 
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def _state_change_handler(self, ev):
+        """Track datapaths as they connect and disconnect."""
         datapath = ev.datapath
         if ev.state == MAIN_DISPATCHER:
             if datapath.id not in self.datapaths:
@@ -43,20 +48,14 @@ class SimpleMonitor13(switch.SimpleSwitch13):
                 del self.datapaths[datapath.id]
 
     def _monitor(self):
+        """Periodically request stats from switches."""
         while True:
             for dp in self.datapaths.values():
                 self._request_stats(dp)
-            hub.sleep(10)  # Monitoring interval of 10 seconds
-
-    def load_model(self):
-        try:
-            self.flow_model = joblib.load('best_svm_model.joblib')
-            self.logger.info('Model loaded successfully')
-        except OSError:
-            self.logger.info("No pretrained model found, training a new one")
-            self.flow_training()
+            hub.sleep(10)  # Monitoring interval
 
     def _request_stats(self, datapath):
+        """Request flow stats from a switch."""
         self.logger.debug('Send stats request: %016x', datapath.id)
         parser = datapath.ofproto_parser
         req = parser.OFPFlowStatsRequest(datapath)
@@ -64,64 +63,69 @@ class SimpleMonitor13(switch.SimpleSwitch13):
 
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
     def _flow_stats_reply_handler(self, ev):
+        """Handle flow stats replies and send them to RabbitMQ."""
         datapath_id = ev.msg.datapath.id
         body = ev.msg.body
         flow_count = len(body)  # Count the number of flows for this switch
+
         self.logger.info(f"Switch {datapath_id}: {flow_count} active flows")
-
-        # Send stats to message broker
-        self.send_stats_to_broker(datapath_id, flow_count)
-
-        # Check if the flow count exceeds the threshold and trigger load balancing
         if flow_count > self.flow_threshold:
-            self.logger.warning(f"Switch {datapath_id} exceeds flow threshold ({self.flow_threshold}). Load balancing required!")
-            self.trigger_load_balancing(datapath_id, flow_count)
+        # Send stats to the message broker
+            self.send_stats_to_broker(datapath_id, flow_count)
+            self._consume_migration_commands()
+            self.handle_migration_command()
 
     def send_stats_to_broker(self, datapath_id, flow_count):
-        # Prepare state message to send to the broker
+        """Publish controller stats to RabbitMQ."""
+        if not self.producer_connection or self.producer_connection.is_closed:
+            self.logger.error("RabbitMQ producer connection is not available. Cannot send stats.")
+            return
+
         state = {
-            "controller_id": f"ryu{datapath_id}",
+            "controller_id": f"1",
             "flow_count": flow_count,
             "timestamp": datetime.now().isoformat()
         }
-        self.channel.basic_publish(exchange='',
-                                   routing_key='controller_states',
-                                   body=str(state))
-        self.logger.info(f"Sent stats for datapath {datapath_id} to message broker.")
 
-    def trigger_load_balancing(self, datapath_id, flow_count):
-        # Implement load balancing logic here
-        self.logger.info(f"Triggering load balancing for switch {datapath_id} with {flow_count} flows.")
-        # Example: You could redistribute flows or migrate controllers
+        self.producer_channel.basic_publish(
+            exchange='',
+            routing_key='controller_states',
+            body=json.dumps(state)
+        )
+        self.logger.info(f"Sent stats for datapath {datapath_id} to RabbitMQ.")
 
-    def flow_training(self):
-        self.logger.info("Flow Training ...")
+    def _consume_migration_commands(self):
+        """Consume migration commands from RabbitMQ."""
+        if not self.consumer_connection or self.consumer_connection.is_closed:
+            self.logger.error("RabbitMQ consumer connection is not available.")
+            return
 
-        flow_dataset = pd.read_csv('FlowStatsfile.csv')
-        flow_dataset.iloc[:, 2] = flow_dataset.iloc[:, 2].str.replace('.', '')
-        flow_dataset.iloc[:, 3] = flow_dataset.iloc[:, 3].str.replace('.', '')
-        flow_dataset.iloc[:, 5] = flow_dataset.iloc[:, 5].str.replace('.', '')
+        def callback(ch, method, properties, body):
+            try:
+                migration_command = json.loads(body.decode('utf-8'))
+                self.logger.info(f"Received migration command: {migration_command}")
+                self.handle_migration_command(migration_command)
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Failed to decode migration command: {e}")
 
-        X_flow = flow_dataset.iloc[:, :-1].values
-        X_flow = X_flow.astype('float64')
+        self.consumer_channel.basic_consume(
+            queue='migration_commands',
+            on_message_callback=callback,
+            auto_ack=True
+        )
 
-        y_flow = flow_dataset.iloc[:, -1].values
+        self.logger.info("Started consuming migration commands.")
+        self.consumer_channel.start_consuming()
 
-        X_flow_train, X_flow_test, y_flow_train, y_flow_test = train_test_split(X_flow, y_flow, test_size=0.25, random_state=0)
+    def handle_migration_command(self, migration_command):
+        """Handle received migration commands."""
+        from_controller = migration_command["from"]
+        to_controller = migration_command["to"]
+        switch_id = migration_command["switch_id"]
 
-        classifier = RandomForestClassifier(n_estimators=10, criterion="entropy", random_state=0)
-        self.flow_model = classifier.fit(X_flow_train, y_flow_train)
-
-        y_flow_pred = self.flow_model.predict(X_flow_test)
-
-        self.logger.info("------------------------------------------------------------------------------")
-        self.logger.info("Confusion matrix")
-        cm = confusion_matrix(y_flow_test, y_flow_pred)
-        self.logger.info(cm)
-
-        acc = accuracy_score(y_flow_test, y_flow_pred)
-
-        self.logger.info("Success accuracy = {0:.2f} %".format(acc * 100))
-        fail = 1.0 - acc
-        self.logger.info("Fail accuracy = {0:.2f} %".format(fail * 100))
-        self.logger.info("------------------------------------------------------------------------------")
+        if from_controller == f"ryu{self.dpid}":
+            # Logic to migrate the switch to another controller
+            self.logger.info(f"Initiating migration of {switch_id} to {to_controller}.")
+            # Migration logic would involve modifying flow rules or reassigning ownership
+        else:
+            self.logger.info(f"Migration command not for this controller (target: {to_controller}).")
