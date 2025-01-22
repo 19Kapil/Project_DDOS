@@ -97,8 +97,8 @@ def multiControllerNet():
     # info("*** Transferring s1 from c1 to c2\n")
     # call(["ovs-vsctl", "set-controller", "s1", "tcp:127.0.0.1:6654"])
 
-    info("*** Testing network again\n")
-    net.pingAll()
+    # info("*** Testing network again\n")
+    # net.pingAll()
 
     info("*** Running CLI\n")
     CLI(net)
