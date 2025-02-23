@@ -9,7 +9,8 @@ metrics_queue = 'controller'
 
 # Threshold for load balancing
 load_threshold = 300
-latency_threshold = 150 # Example latency threshold
+latency_threshold = 10 # Example latency threshold
+expected_controllers = {"1", "2", "3"} 
 controllers = defaultdict(dict)  # To store controller metrics
 
 def on_message(ch, method, properties, body):
@@ -19,7 +20,7 @@ def on_message(ch, method, properties, body):
     try:
         metrics = json.loads(body)
         controller_id = metrics["controller_id"]
-        print(controller_id)
+        # print(controller_id)
         latency = metrics["latency"]
         load = metrics["load"]
         connected_switches = metrics["connected_switches"]
@@ -30,8 +31,12 @@ def on_message(ch, method, properties, body):
              "connected_switches": connected_switches,
         }
 
-        print(f"Received metrics: {metrics}")
-        evaluate_load_balancing()
+        # Check if we have received metrics from all controllers
+        if expected_controllers.issubset(controllers.keys()):
+            evaluate_load_balancing()
+            controllers.clear()  # Reset after processing
+        # # print(f"Received metrics: {metrics}")
+        # evaluate_load_balancing()
     except json.JSONDecodeError as e:
         print(f"Error decoding message: {e}")
 

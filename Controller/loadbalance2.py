@@ -59,7 +59,7 @@ class LoadBalancedController(switch.SimpleSwitch13):
             
             self.calculate_final_metrics()
             self.send_metrics_to_broker()
-            hub.sleep(10)
+            hub.sleep(30)
 
     def _request_stats(self, datapath):
         """Request flow stats from a switch."""

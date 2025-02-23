@@ -5,7 +5,6 @@ from ryu.lib import hub
 
 import switchm
 from datetime import datetime
-import joblib 
 from xgboost import XGBClassifier
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -167,7 +166,7 @@ class SimpleMonitor13(switchm.SimpleSwitch13):
             predict_flow_dataset.iloc[:, 2] = predict_flow_dataset.iloc[:, 2].str.replace('.', '')
             predict_flow_dataset.iloc[:, 3] = predict_flow_dataset.iloc[:, 3].str.replace('.', '')
             predict_flow_dataset.iloc[:, 5] = predict_flow_dataset.iloc[:, 5].str.replace('.', '')
-
+            # predict_flow_dataset.drop(['ip_src', 'ip_dst'], axis =1 , inplace= True)
             X_predict_flow = predict_flow_dataset.iloc[:, :].values
             X_predict_flow = X_predict_flow.astype('float64')
             
