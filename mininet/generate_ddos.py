@@ -10,6 +10,7 @@ from mininet.cli import CLI
 from mininet.log import setLogLevel, info
 from mininet.topo import Topo
 from subprocess import call
+from random import sample
 
 from time import sleep 
 import os
@@ -129,42 +130,65 @@ def multiControllerNet():
 
     sleep(2)
 
-    for h in hosts:
-        h.cmd('cd /home/mininet/webserver')
+    attacked_hosts = set()
+
+    for attacker in hosts:
+        available_hosts = [h for h in hosts if h != attacker]
+
+        if len(available_hosts) < 4:
+            break  # Stop if fewer than 5 available targets remain
+
+        victims = sample(available_hosts, 4)  # Select 5 unique victims
+
+        info("\n--------------------------------------------------------------------------------\n"
+             f"{attacker.name} performing ICMP (Ping) Flood on 5 victims\n"
+             "--------------------------------------------------------------------------------\n")
+
+        for victim in victims:
+            info(f"{attacker.name} attacking {victim.IP()}\n")
+            attacker.cmd(f"timeout 0.25s hping3 -1 -V -d 120 -w 64 -p 80 --flood --rand-source {victim.IP()} &")
+            sleep(30)  # Mark victim as attacked
+
+        sleep(30)  # Pause before the next attack round
+
+
+
+    # for h in hosts:
+    #     h.cmd('cd /home/mininet/webserver')
     
  
-    # Simulating attack scenarios
-    src = choice(hosts)
-    dst = ip_generator()   
-    info("\n--------------------------------------------------------------------------------\n"
-        "Performing ICMP (Ping) Flood\n"
-        "--------------------------------------------------------------------------------\n")
-    src.cmd(f"timeout 5s hping3 -1 -V -d 120 -w 64 -p 80 --flood {dst}")
-    sleep(50)
+    # # Simulating attack scenarios
+    # src = choice(hosts)
+    # dst = ip_generator()   
+    # info("\n--------------------------------------------------------------------------------\n"
+    #     "Performing ICMP (Ping) Flood\n"
+    #     "--------------------------------------------------------------------------------\n")
+    # src.cmd(f"timeout 1s hping3 -1 -V -d 120 -w 64 -p 80 --flood --rand-source {dst}")
+    # sleep(100)
             
     # src = choice(hosts)
     # dst = ip_generator()   
     # info("\n--------------------------------------------------------------------------------\n"
     #     "Performing UDP Flood\n"
     #     "--------------------------------------------------------------------------------\n")
-    # src.cmd(f"timeout 5s hping3 -2 -V -d 120 -w 64 --flood {dst}")
-    # sleep(100)
+    # src.cmd(f"timeout 3s hping3 -2 -V -d 120 -w 64 --flood --rand-source {dst}")
+    # sleep(30)
         
     # src = choice(hosts)
     # dst = ip_generator()    
     # info("\n--------------------------------------------------------------------------------\n"
     #     "Performing TCP-SYN Flood\n"
     #     "--------------------------------------------------------------------------------\n")
-    # src.cmd('timeout 5s hping3 -S -V -d 120 -w 64 -p 80 --flood 10.0.0.1')
-    # sleep(100)
+    # src.cmd('timeout 3s hping3 -S -V -d 120 -w 64 -p 80 --flood --rand-source 10.0.0.1')
+    # sleep(30)
         
     # src = choice(hosts)
     # dst = ip_generator()   
     # info("\n--------------------------------------------------------------------------------\n"
     #     "Performing LAND Attack\n"
     #     "--------------------------------------------------------------------------------\n")
-    # src.cmd(f"timeout 5s hping3 -1 -V -d 120 -w 64 --flood -a {dst} {dst}")
-    # sleep(100)
+    # src.cmd(f"timeout 3s hping3 -1 -V -d 120 -w 64 --flood -a {dst} {dst}")
+    # sleep(30)
 
     info("\n--------------------------------------------------------------------------------\n"
         "Attack simulation completed\n"
