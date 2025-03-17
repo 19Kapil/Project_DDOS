@@ -54,7 +54,7 @@ class SimpleMonitor13(switch.SimpleSwitch13):
     def load_model(self):
         try:
             self.flow_model = XGBClassifier()
-            self.flow_model.load_model("xgb_best_model (1).json")
+            self.flow_model.load_model("xgb_best_model (3).json")
             self.logger.info('Model loaded successfully')
         except OSError:
             self.logger.info("No pretrained model found ,training a new one")
@@ -179,10 +179,13 @@ class SimpleMonitor13(switch.SimpleSwitch13):
             # X = predict_flow_dataset
             # X = scaler.fit_transform(np.array(X))
             # self.logger.info("this2")
-            predict_flow_dataset.iloc[:, 2] = predict_flow_dataset.iloc[:, 2].str.replace('.', '')
-            predict_flow_dataset.iloc[:, 3] = predict_flow_dataset.iloc[:, 3].str.replace('.', '')
-            predict_flow_dataset.iloc[:, 5] = predict_flow_dataset.iloc[:, 5].str.replace('.', '')
+            predict_flow_dataset.drop("timestamp",axis =1 , inplace=True)
+            predict_flow_dataset.drop("tp_dst",axis =1 ,inplace=True)
 
+            predict_flow_dataset.iloc[:, 1] = predict_flow_dataset.iloc[:, 1].str.replace('.', '')
+            predict_flow_dataset.iloc[:, 2] = predict_flow_dataset.iloc[:, 2].str.replace('.', '')
+            predict_flow_dataset.iloc[:, 4] = predict_flow_dataset.iloc[:, 4].str.replace('.', '')
+            
             X_flow = predict_flow_dataset
             X_flow = X_flow.astype('float64')
             y_flow_pred = self.flow_model.predict(X_flow)
@@ -197,7 +200,7 @@ class SimpleMonitor13(switch.SimpleSwitch13):
                     legitimate_trafic = legitimate_trafic + 1
                 else:
                     ddos_trafic = ddos_trafic + 1
-                    victim = int(predict_flow_dataset.iloc[i, 5])%20
+                    victim = int(predict_flow_dataset.iloc[i, 4])%20
                     
                     
                     

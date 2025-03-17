@@ -3,33 +3,50 @@ from ryu.controller.handler import MAIN_DISPATCHER, DEAD_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.lib import hub
 
-import switch
+import pika
+import json
+import switchm
 from datetime import datetime
-from joblib import load
-from sklearn.ensemble import RandomForestClassifier
-import pandas as pd
-import numpy as np
-from sklearn import svm
-from sklearn.preprocessing import StandardScaler , LabelEncoder
-from sklearn.model_selection import train_test_split
 from xgboost import XGBClassifier
-from sklearn.metrics import confusion_matrix
-from sklearn.metrics import accuracy_score
+import pandas as pd
 
-class SimpleMonitor13(switch.SimpleSwitch13):
+
+class SimpleMonitor13(switchm.SimpleSwitch13):
 
     def __init__(self, *args, **kwargs):
 
         super(SimpleMonitor13, self).__init__(*args, **kwargs)
         self.datapaths = {}
         self.monitor_thread = hub.spawn(self._monitor)
-
-        start = datetime.now()
-
+        self.metrics = {}
+        self.ddos = 0
+        self.switch_data =[]
+        self.datapath_metadata = {}
+        self.flow_threshold = 30  # Example flow count threshold
+        self.controller_id = "3"  # Default ID
         self.load_model()
+        self.setup_messaging()
+        self.monitor_thread = hub.spawn(self._monitor)
 
-        end = datetime.now()
-        print("Training time: ", (end-start))
+    def setup_messaging(self):
+        """Set up RabbitMQ connections for communication."""
+        try:
+            self.rabbitmq_host = 'localhost'
+            self.rabbitmq_queue = 'controller'
+            # Establish the connection to RabbitMQ
+            self.connection = pika.BlockingConnection(pika.ConnectionParameters(host = self.rabbitmq_host,heartbeat=600))
+            self.channel = self.connection.channel()
+            # Declare the queue if it does not exist
+            self.channel.queue_declare(queue=self.rabbitmq_queue, durable=True)
+            self.logger.info("RabbitMQ connection established and queue declared.")
+        except pika.exceptions.AMQPConnectionError as e:
+            self.logger.error(f"Failed to connect to RabbitMQ: {e}")
+            self.reconnect_rabbitmq() 
+
+    def reconnect_rabbitmq(self):
+        self.connection = pika.BlockingConnection(pika.ConnectionParameters(host = self.rabbitmq_host,heartbeat=600))
+        self.channel = self.connection.channel()
+
 
     @set_ev_cls(ofp_event.EventOFPStateChange,
                 [MAIN_DISPATCHER, DEAD_DISPATCHER])
@@ -48,17 +65,22 @@ class SimpleMonitor13(switch.SimpleSwitch13):
         while True:
             for dp in self.datapaths.values():
                 self._request_stats(dp)
-            hub.sleep(10)
-            self.flow_predict()
 
+            if self.ddos == 0:
+                self.calculate_final_metrics()
+                self.send_metrics_to_broker()
+
+            self.flow_predict()
+            hub.sleep(10)
+
+            
+    
     def load_model(self):
         try:
             self.flow_model = XGBClassifier()
             self.flow_model.load_model("xgb_best_model (3).json")
-            self.logger.info('Model loaded successfully')
         except OSError:
             self.logger.info("No pretrained model found ,training a new one")
-            self.flow_training()
 
 
     def _request_stats(self, datapath):
@@ -68,15 +90,33 @@ class SimpleMonitor13(switch.SimpleSwitch13):
         req = parser.OFPFlowStatsRequest(datapath)
         datapath.send_msg(req)
 
+        # Track the time when the request was sent
+        self.datapath_metadata[datapath.id] = {
+            'last_request_time': datetime.now()
+        }
+
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
     def _flow_stats_reply_handler(self, ev):
 
         timestamp = datetime.now()
         timestamp = timestamp.timestamp()
 
+        datapath_id = ev.msg.datapath.id
+        body = ev.msg.body
+        flow_count = len(body)  # Count the number of flows for this switch
+        self.logger.info(f"Switch {datapath_id}: {flow_count} active flows")
+        # Calculate latency
+        # latency = self.calculate_latency()
+        metrics = {
+                "switch_id": datapath_id,
+                "latency": self.calculate_latency(datapath_id),
+                "load": flow_count,
+                "timestamp": datetime.now().isoformat()
+            }
+        self.switch_data.append(metrics)
+
         file0 = open("PredictFlowStatsfile3.csv","w")
         file0.write('timestamp,datapath_id,flow_id,ip_src,tp_src,ip_dst,tp_dst,ip_proto,icmp_code,icmp_type,flow_duration_sec,flow_duration_nsec,idle_timeout,hard_timeout,flags,packet_count,byte_count,packet_count_per_second,packet_count_per_nsecond,byte_count_per_second,byte_count_per_nsecond\n')
-        body = ev.msg.body
         icmp_code = -1
         icmp_type = -1
         tp_src = 0
@@ -128,68 +168,83 @@ class SimpleMonitor13(switch.SimpleSwitch13):
             
         file0.close()
 
-    def flow_training(self):
+    def calculate_final_metrics(self):
+        total_latency = int(0)
+        total_load = 0
+        switch_count = len(self.switch_data)
 
-        self.logger.info("Flow Training ...")
+        for metrics in self.switch_data:
+        
+            total_latency += metrics["latency"]
+            
+            total_load += metrics["load"]
 
-        flow_dataset = pd.read_csv('FlowStatsfile3.csv')
+        avg_latency = total_latency / switch_count if switch_count > 0 else 0
 
-        flow_dataset.iloc[:, 2] = flow_dataset.iloc[:, 2].str.replace('.', '')
-        flow_dataset.iloc[:, 3] = flow_dataset.iloc[:, 3].str.replace('.', '')
-        flow_dataset.iloc[:, 5] = flow_dataset.iloc[:, 5].str.replace('.', '')
+        self.metrics = {
+            "controller_id": self.controller_id,
+            "total_switches": switch_count,
+            "latency": avg_latency,
+            "load": total_load,
+            "connected_switches": list(self.datapaths.keys()),
+            "timestamp": datetime.now().isoformat()
+        }
 
-        X_flow = flow_dataset.iloc[:, :-1].values
-        X_flow = X_flow.astype('float64')
+    def calculate_latency(self, datapath_id):
+        """Calculate latency dynamically based on timestamps."""
+        try:
+            # Example: Use datapath's flow stats and track request/response times
+            metadata = self.datapath_metadata.get(datapath_id, {})
+            start_time = metadata.get('last_request_time', None)
+            if not start_time:
+                return 0  # Latency cannot be calculated yet
 
-        y_flow = flow_dataset.iloc[:, -1].values
+            current_time = datetime.now()
+            latency = (current_time - start_time).total_seconds() * 1000  # Convert to milliseconds
+            return latency
+        except Exception as e:
+            self.logger.error(f"Error calculating latency for {datapath_id}: {e}")
+            return None
 
-        X_flow_train, X_flow_test, y_flow_train, y_flow_test = train_test_split(X_flow, y_flow, test_size=0.25, random_state=0)
 
-        classifier = RandomForestClassifier(n_estimators=10, criterion="entropy", random_state=0)
-        self.flow_model = classifier.fit(X_flow_train, y_flow_train)
+    def calculate_load(self):
+        """Calculate load based on the number of datapaths."""
+        return len(self.datapaths)  # Number of connected switches
 
-        y_flow_pred = self.flow_model.predict(X_flow_test)
+    def send_metrics_to_broker(self):
+        """Publish metrics to RabbitMQ."""
+        if not self.channel and self.connection or self.connection.is_closed:
+            self.logger.error("RabbitMQ connection is not available. Cannot send metrics.")
+            return
 
-        self.logger.info("------------------------------------------------------------------------------")
+        self.channel.basic_publish(
+            exchange='',
+            routing_key=self.rabbitmq_queue,
+            body=json.dumps(self.metrics)
+        )
+        self.logger.info(f"Sent metrics: {self.metrics}")
+        self.switch_data = []
 
-        self.logger.info("confusion matrix")
-        cm = confusion_matrix(y_flow_test, y_flow_pred)
-        self.logger.info(cm)
-
-        acc = accuracy_score(y_flow_test, y_flow_pred)
-
-        self.logger.info("succes accuracy = {0:.2f} %".format(acc*100))
-        fail = 1.0 - acc
-        self.logger.info("fail accuracy = {0:.2f} %".format(fail*100))
-        self.logger.info("------------------------------------------------------------------------------")
+    def close_messaging(self):
+        if self.connection:
+            self.connection.close()
+            self.logger.info("RabbitMq closed")
 
     def flow_predict(self):
         try:
             predict_flow_dataset = pd.read_csv('PredictFlowStatsfile3.csv')
-            # remove_cols = ["idle_timeout", "hard_timeout","flags"]
-            # predict_flow_dataset.drop(remove_cols, axis =1, inplace=True)
-            # Drop specific columns using their indices (assuming positions are known)
-            # predict_flow_dataset = pd.read_csv(StringIO(csv_data), header=None)
-            # predict_flow_dataset.drop(predict_flow_dataset.columns[[10, 11, 12]], axis=1, inplace = True)
 
-            # predict_flow_dataset = predict_flow_dataset.apply(LabelEncoder().fit_transform)
-            # self.logger.info("this3")
-            # scaler = StandardScaler()
-            # X = predict_flow_dataset
-            # X = scaler.fit_transform(np.array(X))
-            # self.logger.info("this2")
             predict_flow_dataset.drop("timestamp",axis =1 , inplace=True)
             predict_flow_dataset.drop("tp_dst",axis =1 ,inplace=True)
 
             predict_flow_dataset.iloc[:, 1] = predict_flow_dataset.iloc[:, 1].str.replace('.', '')
             predict_flow_dataset.iloc[:, 2] = predict_flow_dataset.iloc[:, 2].str.replace('.', '')
             predict_flow_dataset.iloc[:, 4] = predict_flow_dataset.iloc[:, 4].str.replace('.', '')
+            
             X_flow = predict_flow_dataset
             X_flow = X_flow.astype('float64')
             y_flow_pred = self.flow_model.predict(X_flow)
-            # self.logger.info("Print this")
-            # self.logger.info(y_flow_pred)
-
+            
             legitimate_trafic = 0
             ddos_trafic = 0
 
@@ -205,10 +260,14 @@ class SimpleMonitor13(switch.SimpleSwitch13):
 
             self.logger.info("------------------------------------------------------------------------------")
             if (legitimate_trafic/len(y_flow_pred)*100) > 80:
-                self.logger.info("legitimate trafic ...")
+                self.ddos = 0
+                self.logger.info("Traffic is Legitimate!")
             else:
-                self.logger.info("ddos trafic ...")
-                self.logger.info("victim is host: h{}".format(victim))
+                self.logger.info("NOTICE!! DoS Attack in Progress!!!")
+                self.logger.info("Victim Host: h{}".format(victim))
+                print("Mitigation process in progress!")
+                self.ddos = 1
+                self.mitigation = 1
 
             self.logger.info("------------------------------------------------------------------------------")
             
@@ -217,6 +276,5 @@ class SimpleMonitor13(switch.SimpleSwitch13):
             file0.write('timestamp,datapath_id,flow_id,ip_src,tp_src,ip_dst,tp_dst,ip_proto,icmp_code,icmp_type,flow_duration_sec,flow_duration_nsec,idle_timeout,hard_timeout,flags,packet_count,byte_count,packet_count_per_second,packet_count_per_nsecond,byte_count_per_second,byte_count_per_nsecond\n')
             file0.close()
 
-        except Exception as e:
-            # self.logger.info(e)
+        except:
             pass

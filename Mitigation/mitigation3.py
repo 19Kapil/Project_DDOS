@@ -52,7 +52,7 @@ class SimpleMonitor13(switchm.SimpleSwitch13):
     def load_model(self):
         try:
             self.flow_model = XGBClassifier()
-            self.flow_model.load_model("xgb_best_model (1).json")
+            self.flow_model.load_model("xgb_best_model (3).json")
         except OSError:
             self.logger.info("No pretrained model found ,training a new one")
             self.flow_training()
@@ -163,14 +163,25 @@ class SimpleMonitor13(switchm.SimpleSwitch13):
         try:
             predict_flow_dataset = pd.read_csv('PredictFlowStatsfile3.csv')
 
+            predict_flow_dataset.drop("timestamp",axis =1 , inplace=True)
+            predict_flow_dataset.drop("tp_dst",axis =1 ,inplace=True)
+
+            predict_flow_dataset.iloc[:, 1] = predict_flow_dataset.iloc[:, 1].str.replace('.', '')
             predict_flow_dataset.iloc[:, 2] = predict_flow_dataset.iloc[:, 2].str.replace('.', '')
-            predict_flow_dataset.iloc[:, 3] = predict_flow_dataset.iloc[:, 3].str.replace('.', '')
-            predict_flow_dataset.iloc[:, 5] = predict_flow_dataset.iloc[:, 5].str.replace('.', '')
-            # predict_flow_dataset.drop(['ip_src', 'ip_dst'], axis =1 , inplace= True)
-            X_predict_flow = predict_flow_dataset.iloc[:, :].values
-            X_predict_flow = X_predict_flow.astype('float64')
+            predict_flow_dataset.iloc[:, 4] = predict_flow_dataset.iloc[:, 4].str.replace('.', '')
             
-            y_flow_pred = self.flow_model.predict(X_predict_flow)
+            X_flow = predict_flow_dataset
+            X_flow = X_flow.astype('float64')
+            y_flow_pred = self.flow_model.predict(X_flow)
+
+            # predict_flow_dataset.iloc[:, 2] = predict_flow_dataset.iloc[:, 2].str.replace('.', '')
+            # predict_flow_dataset.iloc[:, 3] = predict_flow_dataset.iloc[:, 3].str.replace('.', '')
+            # predict_flow_dataset.iloc[:, 5] = predict_flow_dataset.iloc[:, 5].str.replace('.', '')
+            # # predict_flow_dataset.drop(['ip_src', 'ip_dst'], axis =1 , inplace= True)
+            # X_predict_flow = predict_flow_dataset.iloc[:, :].values
+            # X_predict_flow = X_predict_flow.astype('float64')
+            
+            # y_flow_pred = self.flow_model.predict(X_predict_flow)
 
             legitimate_trafic = 0
             ddos_trafic = 0
@@ -180,7 +191,7 @@ class SimpleMonitor13(switchm.SimpleSwitch13):
                     legitimate_trafic = legitimate_trafic + 1
                 else:
                     ddos_trafic = ddos_trafic + 1
-                    victim = int(predict_flow_dataset.iloc[i, 5])%20
+                    victim = int(predict_flow_dataset.iloc[i, 4])%20
                     
                     
                     

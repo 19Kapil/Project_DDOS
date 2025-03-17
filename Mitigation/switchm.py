@@ -146,12 +146,12 @@ class SimpleSwitch13(app_manager.RyuApp):
                                             udp_src=u.src_port, udp_dst=u.dst_port,)
                 #print("mitigation")
                 if self.mitigation:
-                    print("mitigation_in")
+                    # print("mitigation_in")
                     if not (srcip in self.arp_ip_to_port[dpid][in_port]):
-                        print("attack detected from port ", in_port)
-                        print("Block the port ", in_port)
+                        # print("attack detected from port ", in_port)
+                        # print("Block the port ", in_port)
+                        # print(ip)
                         self.block_port(datapath, in_port)
-                        print(ip)
                         return
 
                 # verify if we have a valid buffer_id, if yes avoid to send both

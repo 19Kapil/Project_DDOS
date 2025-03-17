@@ -2,14 +2,15 @@ import pika
 import json
 from collections import defaultdict
 import os
+from  network_graph import draw_network_graph
 
 # RabbitMQ Configuration
 rabbitmq_host = 'localhost'
 metrics_queue = 'controller'
 
 # Threshold for load balancing
-load_threshold = 300
-latency_threshold = 10 # Example latency threshold
+load_threshold = 50
+latency_threshold = 300 # Example latency threshold
 expected_controllers = {"1", "2", "3"} 
 controllers = defaultdict(dict)  # To store controller metrics
 
@@ -34,8 +35,10 @@ def on_message(ch, method, properties, body):
         # Check if we have received metrics from all controllers
         if expected_controllers.issubset(controllers.keys()):
             evaluate_load_balancing()
+            draw_network_graph(controllers)
+            # print(f"Received metrics: {metrics}")
             controllers.clear()  # Reset after processing
-        # # print(f"Received metrics: {metrics}")
+            
         # evaluate_load_balancing()
     except json.JSONDecodeError as e:
         print(f"Error decoding message: {e}")
@@ -44,6 +47,7 @@ def evaluate_load_balancing():
     """Evaluate and decide on load balancing."""
     overloaded_controllers = []
     underloaded_controllers = []
+    # print("here")
 
     for controller_id, data in controllers.items():
         if data["latency"] > latency_threshold and data["load"] > load_threshold:
@@ -54,15 +58,9 @@ def evaluate_load_balancing():
     for src in overloaded_controllers:
         if underloaded_controllers:
             dst = underloaded_controllers.pop(0)  # Get one underloaded controller
+            print("here2")
             migrate_switch(src, dst)
 
-def migrate_switch(src, dst):
-    """Simulate migration by printing the decision."""
-    if controllers[src]["connected_switches"]:
-        switch_id = controllers[src]["connected_switches"].pop(0)  # Take one switch to migrate
-        controllers[dst]["connected_switches"].append(switch_id)
-
-        print(f"Switch {switch_id} migrated from {src} to {dst}")
 
 def migrate_switch(src, dst):
     """Migrate a switch from one controller to another."""
@@ -74,8 +72,9 @@ def migrate_switch(src, dst):
     }
 
 
-    if controllers[src]["connected_switches"]:
+    if controllers[src]["connected_switches"] :
         # Take one switch to migrate
+        print(len(controllers[src]["connected_switches"]))
         switch_id = controllers[src]["connected_switches"].pop(0)
         controllers[dst]["connected_switches"].append(switch_id)
 
